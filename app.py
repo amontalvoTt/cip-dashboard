@@ -61,8 +61,15 @@ def clean_and_normalize(df):
     return df.dropna(subset=['Start_Dt', 'End_Dt'])
 
 if uploaded_file is not None:
-    raw_df = pd.read_csv(uploaded_file)
+    # Adding encoding='utf-8-sig' handles hidden Excel BOM characters automatically
+    try:
+        raw_df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+    except UnicodeDecodeError:
+        # Fallback for standard Windows Excel exports if utf-8-sig struggles
+        raw_df = pd.read_csv(uploaded_file, encoding='cp1252')
+        
     df = clean_and_normalize(raw_df)
+
 else:
     st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
     st.stop()
