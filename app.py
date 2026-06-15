@@ -61,34 +61,32 @@ def clean_and_normalize(df):
     return df.dropna(subset=['Start_Dt', 'End_Dt'])
 
 if uploaded_file is not None:
-    # Read the file contents as raw text first to strip out any problematic source tags
-    try:
-        raw_bytes = uploaded_file.read()
-        # Decode using utf-8-sig to clear Excel BOMs automatically
-        raw_text = raw_bytes.decode('utf-8-sig', errors='ignore')
-    except Exception:
-        # Fallback decode if it's a legacy Windows export
-        raw_text = raw_bytes.decode('cp1252', errors='ignore')
-        
-    # Clean out the copy-paste markdown tags so they don't break row alignments
-    import re
-    cleaned_text = re.sub(r'\', '', raw_text)
-    
-    # Pass the cleaned text stream into pandas using the flexible Python parsing engine
-    try:
-        raw_df = pd.read_csv(
-            io.StringIO(cleaned_text), 
-            engine='python', 
-            on_bad_lines='skip'  # Safely bypasses rows that are fundamentally broken
-        )
-        df = clean_and_normalize(raw_df)
-    except Exception as e:
-        st.error(# Forced fallback if everything else fails
-            f"Failed to parse CSV file structure. Technical details: {str(e)}"
-        )
+   # Read raw bytes safely
+   raw_bytes = uploaded_file.read()
+   # Standardize character decoding safely
+   try:
+       raw_text = raw_bytes.decode('utf-8-sig', errors='ignore')
+   except Exception:
+       raw_text = raw_bytes.decode('cp1252', errors='ignore')
+   # BACKSLASH-FREE CLEANING: Strip out source tags without using regular expressions
+   # This loops from 1 to 40 and removes any instances like '' cleanly
+   cleaned_text = raw_text
+   for i in range(1, 41):
+       tag_to_remove = f""
+       cleaned_text = cleaned_text.replace(tag_to_remove, "")
+   # Read into pandas using the flexible Python parsing engine
+   try:
+       raw_df = pd.read_csv(
+           io.StringIO(cleaned_text),
+           engine='python',
+           on_bad_lines='skip'
+       )
+       df = clean_and_normalize(raw_df)
+   except Exception as e:
+       st.error(f"Failed to parse CSV file structure. Technical details: {str(e)}")
 else:
-    st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
-    st.stop()
+st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
+   st.stop()
 
 
 # --- 2. DYNAMIC SCORING ENGINE ---
