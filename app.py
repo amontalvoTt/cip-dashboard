@@ -61,18 +61,35 @@ def clean_and_normalize(df):
     return df.dropna(subset=['Start_Dt', 'End_Dt'])
 
 if uploaded_file is not None:
-    # Adding encoding='utf-8-sig' handles hidden Excel BOM characters automatically
+    # Read the file contents as raw text first to strip out any problematic source tags
     try:
-        raw_df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-    except UnicodeDecodeError:
-        # Fallback for standard Windows Excel exports if utf-8-sig struggles
-        raw_df = pd.read_csv(uploaded_file, encoding='cp1252')
+        raw_bytes = uploaded_file.read()
+        # Decode using utf-8-sig to clear Excel BOMs automatically
+        raw_text = raw_bytes.decode('utf-8-sig', errors='ignore')
+    except Exception:
+        # Fallback decode if it's a legacy Windows export
+        raw_text = raw_bytes.decode('cp1252', errors='ignore')
         
-    df = clean_and_normalize(raw_df)
-
+    # Clean out the copy-paste markdown tags so they don't break row alignments
+    import re
+    cleaned_text = re.sub(r'\', '', raw_text)
+    
+    # Pass the cleaned text stream into pandas using the flexible Python parsing engine
+    try:
+        raw_df = pd.read_csv(
+            io.StringIO(cleaned_text), 
+            engine='python', 
+            on_bad_lines='skip'  # Safely bypasses rows that are fundamentally broken
+        )
+        df = clean_and_normalize(raw_df)
+    except Exception as e:
+        st.error(# Forced fallback if everything else fails
+            f"Failed to parse CSV file structure. Technical details: {str(e)}"
+        )
 else:
     st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
     st.stop()
+
 
 # --- 2. DYNAMIC SCORING ENGINE ---
 st.sidebar.header("2. Prioritization Weights")
