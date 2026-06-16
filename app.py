@@ -7,218 +7,204 @@ import plotly.graph_objects as go
 from streamlit_folium import st_folium
 import folium
 from folium.plugins import MarkerCluster
-
-st.set_page_config(layout="wide", page_title="Enterprise CIP Prioritization Dashboard")
-
-st.title("🗺️ Interactive Capital Improvement Planning (CIP) Dashboard")
+# Page Configuration
+st.set_page_config(layout="wide", page_title="Capital Improvement Planning (CIP) Dashboard")
+st.title("🗺️ Interactive Capital Improvement Planning & Scoring Dashboard")
 st.markdown("---")
-
-# --- 1. DATA LOADING & INGESTION ---
-st.sidebar.header("1. Data Ingestion")
-uploaded_file = st.sidebar.file_uploader("Upload CIP Table (CSV)", type=["csv"])
-
-# Text score mapper for Sheet 2 variations
-score_map = {"Low": 1, "Medium": 3, "High": 5, "No": 1, "Yes": 5}
-
-def clean_and_normalize(df):
-    # Detect Schema Type
-    if 'Asset_Category' in df.columns:
-        # Sheet 1 Schema
-        df['Clean_Cost'] = pd.to_numeric(df['Capital_Cost'], errors='coerce').fillna(0)
-        df['Start_Dt'] = pd.to_datetime(df['Project_Start_Date'], errors='coerce')
-        df['End_Dt'] = pd.to_datetime(df['Project_End_Date'], errors='coerce')
-        df['Dept'] = df['Department']
-        
-        # Standardize criteria scores (already numeric in sheet 1)
-        score_cols = {
-            'Flood': pd.to_numeric(df['Flood_Mitigation_Score'], errors='coerce').fillna(1),
-            'Sustain': pd.to_numeric(df['Sustainability_Score'], errors='coerce').fillna(1),
-            'Econ': pd.to_numeric(df['Economic_Impact_Score'], errors='coerce').fillna(1),
-            'Equity': pd.to_numeric(df['Social_Justice_Equity_Score'], errors='coerce').fillna(1),
-            'Risk': pd.to_numeric(df['Risk_Mitigation_Score'], errors='coerce').fillna(1)
-        }
-    else:
-        # Sheet 2 Schema
-        df['Clean_Cost'] = pd.to_numeric(df['Capital_Cost'], errors='coerce').fillna(0)
-        df['Start_Dt'] = pd.to_datetime(df['Start_Date'], errors='coerce')
-        df['End_Dt'] = pd.to_datetime(df['End_Date'], errors='coerce')
-        df['Dept'] = df['Department']
-        
-        # Standardize and map text criteria rankings
-        score_cols = {
-            'Flood': df['Flood_Mitigation'].map(score_map).fillna(1),
-            'Sustain': df['Sustainability'].map(score_map).fillna(1),
-            'Econ': df['Economic_Impact'].map(score_map).fillna(1),
-            'Equity': df['Social_Equity'].map(score_map).fillna(1),
-            'Risk': df['Risk_Mitigation'].map(score_map).fillna(1)
-        }
-    
-    for k, v in score_cols.items():
-        df[f'score_{k}'] = v
-        
-    df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
-    df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
-    return df.dropna(subset=['Start_Dt', 'End_Dt'])
-
-if uploaded_file is not None:
-   # Read raw bytes safely
-   raw_bytes = uploaded_file.read()
-   # Standardize character decoding safely
-   try:
-       raw_text = raw_bytes.decode('utf-8-sig', errors='ignore')
-   except Exception:
-       raw_text = raw_bytes.decode('cp1252', errors='ignore')
-   # BACKSLASH-FREE CLEANING: Strip out source tags without using regular expressions
-   # This loops from 1 to 40 and removes any instances like '' cleanly
-   cleaned_text = raw_text
-   for i in range(1, 41):
-       tag_to_remove = f""
-       cleaned_text = cleaned_text.replace(tag_to_remove, "")
-   # Read into pandas using the flexible Python parsing engine
-   try:
-       raw_df = pd.read_csv(
-           io.StringIO(cleaned_text),
-           engine='python',
-           on_bad_lines='skip'
-       )
-       df = clean_and_normalize(raw_df)
-   except Exception as e:
-       st.error(f"Failed to parse CSV file structure. Technical details: {str(e)}")
-else:
-   st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
+# --- 1. DATA INGESTION & DATA CLEANING ENGINE ---
+@st.cache_data
+def load_and_clean_data(file_source):
+   # Read the file content
+   if isinstance(file_source, str):
+       df = pd.read_csv(file_source)
+   else:
+       df = pd.read_csv(file_source)
+   # Standardize and clean financial columns
+   for col in ['Capital_Cost', 'Operating_Cost_Annual']:
+       if col in df.columns:
+           df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '').str.strip()
+           df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+   # Standardize and parse dates
+   df['Start_Dt'] = pd.to_datetime(df['Project_Start_Date'], errors='coerce')
+   df['End_Dt'] = pd.to_datetime(df['Project_End_Date'], errors='coerce')
+   # Ensure coordinates are numeric
+   df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
+   df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
+   # Fill missing scores with neutral baseline
+   score_cols = [
+       'Flood_Mitigation_Score', 'Sustainability_Score', 'Economic_Impact_Score',
+       'Social_Justice_Equity_Score', 'Risk_Mitigation_Score', 'Constructability_Score'
+   ]
+   for col in score_cols:
+       if col in df.columns:
+           df[col] = pd.to_numeric(df[col], errors='coerce').fillna(3)
+   # Drop rows that don't have valid start/end dates for timeline calculations
+   return df.dropna(subset=['Start_Dt', 'End_Dt'])
+# Sidebar File Selection
+st.sidebar.header("📁 Data Source Selection")
+uploaded_file = st.sidebar.file_uploader("Upload an updated CIP CSV file", type=["csv"])
+try:
+   if uploaded_file is not None:
+       df = load_and_clean_data(uploaded_file)
+   else:
+       # Fallback to local file discovered in workspace
+       df = load_and_clean_data("CIP_Table.csv")
+   st.sidebar.success(f"Successfully loaded {len(df)} active CIP projects.")
+except Exception as e:
+   st.sidebar.error("Awaiting valid data file input or 'CIP_Table.csv' mismatch.")
    st.stop()
-
-
-# --- 2. DYNAMIC SCORING ENGINE ---
-st.sidebar.header("2. Prioritization Weights")
-w_flood = st.sidebar.slider("Flood Mitigation Weight", 0.0, 1.0, 0.2)
-w_sustain = st.sidebar.slider("Sustainability Weight", 0.0, 1.0, 0.2)
-w_econ = st.sidebar.slider("Economic Impact Weight", 0.0, 1.0, 0.2)
-w_equity = st.sidebar.slider("Social Equity / Justice Weight", 0.0, 1.0, 0.2)
-w_risk = st.sidebar.slider("Risk Mitigation Weight", 0.0, 1.0, 0.2)
-
-# Calculate Normalized Weighted Score
-df['Custom_Priority_Score'] = (
-    (df['score_Flood'] * w_flood) +
-    (df['score_Sustain'] * w_sustain) +
-    (df['score_Econ'] * w_econ) +
-    (df['score_Equity'] * w_equity) +
-    (df['score_Risk'] * w_risk)
-)
-df['Custom_Priority_Score'] = df['Custom_Priority_Score'].round(2)
-df = df.sort_values(by='Custom_Priority_Score', ascending=False)
-
-# --- 3. CASH FLOW TEMPORAL SPREADING ---
-cash_flow_records = []
-for idx, row in df.iterrows():
-    days = (row['End_Dt'] - row['Start_Dt']).days
-    if days <= 0:
-        days = 1
-    daily_cost = row['Clean_Cost'] / days
-    
-    # Generate daily sequence and assign to calendar year bins
-    date_range = pd.date_range(start=row['Start_Dt'], end=row['End_Dt'], freq='D')
-    for d in date_range:
-        cash_flow_records.append({
-            'CIP_ID': row['CIP_ID'],
-            'Project_Name': row['Project_Name'],
-            'Department': row['Dept'],
-            'Year': d.year,
-            'Daily_Cost': daily_cost
-        })
-
-cf_df = pd.DataFrame(cash_flow_records)
-annual_cf = cf_df.groupby(['Year', 'Department'])['Daily_Cost'].sum().reset_index()
-annual_cf.rename(columns={'Daily_Cost': 'Annual_Expenditure'}, inplace=True)
-
-# Generate Cumulative Metrics
-cumulative_df = cf_df.groupby('Year')['Daily_Cost'].sum().cumsum().reset_index()
-cumulative_df.rename(columns={'Daily_Cost': 'Cumulative_Expenditure'}, inplace=True)
-
-# --- 4. DASHBOARD LAYOUT & VISUALS ---
-col1, col2 = pd.columns([3, 2])
-
-with col1:
-    st.subheader("📍 Geospatial Project Inventory (Leaflet)")
-    
-    # Initialize Map around Centroid
-    mid_lat = df['Latitude'].dropna().median() if not df['Latitude'].isna().all() else 28.5383
-    mid_lon = df['Longitude'].dropna().median() if not df['Longitude'].isna().all() else -81.3792
-    
-    m = folium.Map(location=[mid_lat, mid_lon], zoom_start=10, tiles="cartodbpositron")
-    marker_cluster = MarkerCluster().add_to(m)
-    
-    for idx, row in df.dropna(subset=['Latitude', 'Longitude']).iterrows():
-        popup_text = f"""
-        <b>ID:</b> {row['CIP_ID']}<br>
-        <b>Name:</b> {row['Project_Name']}<br>
-        <b>Dept:</b> {row['Dept']}<br>
-        <b>Cost:</b> ${row['Clean_Cost']:,.0f}<br>
-        <b>Score:</b> {row['Custom_Priority_Score']}
-        """
-        # Color nodes based on priority tiering
-        score = row['Custom_Priority_Score']
-        node_color = 'red' if score > 3.5 else 'orange' if score > 2.2 else 'green'
-        
-        folium.CircleMarker(
-            location=[row['Latitude'], row['Longitude']],
-            radius=7,
-            color=node_color,
-            fill=True,
-            fill_color=node_color,
-            fill_opacity=0.7,
-            popup=folium.Popup(popup_text, max_width=300)
-        ).add_to(marker_cluster)
-        
-    st_folium(m, width="100%", height=450, returned_objects=[])
-
-with col2:
-    st.subheader("🏆 Weighted Rank Optimization Table")
-    st.dataframe(
-        df[['CIP_ID', 'Project_Name', 'Dept', 'Clean_Cost', 'Custom_Priority_Score']],
-        use_container_width=True,
-        height=450,
-        column_config={
-            "Clean_Cost": pd.column_config.NumberColumn("Capital Cost", format="$%,.0f"),
-            "Custom_Priority_Score": pd.column_config.ProgressColumn("Priority Score", min_value=0, max_value=5)
-        }
-    )
-
-# --- 5. FINANCIAL CASH FLOW VISUALIZATIONS ---
+# --- 2. MULTI-CRITERIA SCORING & FILTERING ---
+st.sidebar.header("🎛️ Priority Multipliers & Weights")
+st.sidebar.markdown("Adjust priorities to update the composite project scores dynamically:")
+w_flood = st.sidebar.slider("Flood Mitigation Weight", 0.0, 1.0, 0.20, 0.05)
+w_sustain = st.sidebar.slider("Sustainability Weight", 0.0, 1.0, 0.15, 0.05)
+w_econ = st.sidebar.slider("Economic Impact Weight", 0.0, 1.0, 0.15, 0.05)
+w_equity = st.sidebar.slider("Social Justice & Equity Weight", 0.0, 1.0, 0.20, 0.05)
+w_risk = st.sidebar.slider("Risk Mitigation Weight", 0.0, 1.0, 0.20, 0.05)
+w_construct = st.sidebar.slider("Constructability Weight", 0.0, 1.0, 0.10, 0.05)
+# Calculate Normalized Scores
+total_weight = w_flood + w_sustain + w_econ + w_equity + w_risk + w_construct
+if total_weight == 0:
+   total_weight = 1.0
+df['Custom_Composite_Score'] = (
+   (df['Flood_Mitigation_Score'] * w_flood) +
+   (df['Sustainability_Score'] * w_sustain) +
+   (df['Economic_Impact_Score'] * w_econ) +
+   (df['Social_Justice_Equity_Score'] * w_equity) +
+   (df['Risk_Mitigation_Score'] * w_risk) +
+   (df['Constructability_Score'] * w_construct)
+) / total_weight
+df['Custom_Composite_Score'] = df['Custom_Composite_Score'].round(2)
+# Global Filters
+st.sidebar.header("🔍 Global Dashboard Filters")
+all_depts = sorted(df['Department'].unique().tolist())
+selected_depts = st.sidebar.multiselect("Filter by Department", all_depts, default=all_depts)
+all_phases = sorted(df['Phase'].unique().tolist())
+selected_phases = st.sidebar.multiselect("Filter by Project Phase", all_phases, default=all_phases)
+# Apply Filters
+filtered_df = df[df['Department'].isin(selected_depts) & df['Phase'].isin(selected_phases)].copy()
+filtered_df = filtered_df.sort_values(by='Custom_Composite_Score', ascending=False)
+# --- 3. TOP-LEVEL KPI METRICS ---
+total_investment = filtered_df['Capital_Cost'].sum()
+avg_priority_score = filtered_df['Custom_Composite_Score'].mean() if len(filtered_df) > 0 else 0
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("Total Program Portfolio Value", f"${total_investment:,.0f}")
+kpi2.metric("Filtered Projects Counter", f"{len(filtered_df)} Projects")
+kpi3.metric("Average Portfolio Priority Score", f"{avg_priority_score:.2f} / 5.0")
 st.markdown("---")
-st.subheader("⏳ Multi-Year Capital Cash Flow Projections (Linear Cost Spreading)")
-
-col3, col4 = pd.columns(2)
-
-with col3:
-    # Binned Annual Cash Flow Stacked by Department
-    fig_bar = px.bar(
-        annual_cf, 
-        x='Year', 
-        y='Annual_Expenditure', 
-        color='Department',
-        title="Annual Funding Allocations (By Operating Department)",
-        labels={'Annual_Expenditure': 'Allocated Budget ($)', 'Year': 'Calendar Year'},
-        text_auto='.2s'
-    )
-    fig_bar.update_layout(xaxis_type='category', barmode='stack')
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-with col4:
-    # Cumulative Line Curve over Time
-    fig_line = go.Figure()
-    fig_line.add_trace(go.Scatter(
-        x=cumulative_df['Year'], 
-        y=cumulative_df['Cumulative_Expenditure'],
-        mode='lines+markers',
-        name='Cumulative Spending',
-        line=dict(color='#1f77b4', width=3),
-        marker=dict(size=8)
-    ))
-    fig_line.update_layout(
-        title="Cumulative Capital Program Expenditure Profile",
-        xaxis_title="Calendar Year",
-        yaxis_title="Total Program Investment ($)",
-        xaxis=dict(type='category')
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
+# --- 4. LEAFLET GEOSPATIAL MAP & PRIORITIZATION LEADERBOARD ---
+col1, col2 = st.columns([3, 2])
+with col1:
+   st.subheader("📍 Interactive Geospatial Portfolio Map (Leaflet)")
+   # Handle map center calculation safely
+   valid_coords = filtered_df.dropna(subset=['Latitude', 'Longitude'])
+   if not valid_coords.empty:
+       center_lat = valid_coords['Latitude'].median()
+       center_lon = valid_coords['Longitude'].median()
+   else:
+       center_lat, center_lon = 28.5383, -81.3792 # Baseline fallback coords
+   m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="cartodbpositron")
+   marker_cluster = MarkerCluster().add_to(m)
+   for _, row in valid_coords.iterrows():
+       # Setup Dynamic Colored Pin Metrics
+       score = row['Custom_Composite_Score']
+       pin_color = 'red' if score >= 4.0 else 'orange' if score >= 3.0 else 'green'
+       popup_html = f"""
+<div style="font-family: Arial, sans-serif; width: 220px;">
+<h5 style="margin:0 0 5px 0; color:#1f77b4;">{row['Project_Name']}</h5>
+<b>ID:</b> {row['CIP_ID']}<br>
+<b>Dept:</b> {row['Department']}<br>
+<b>Phase:</b> {row['Phase']} ({row['Phase_Status']})<br>
+<b>Capital Cost:</b> ${row['Capital_Cost']:,.0f}<br>
+<hr style="margin:5px 0;">
+<span style="background-color:{pin_color}; color:white; padding:2px 6px; border-radius:3px; font-weight:bold;">
+               Priority Score: {score:.2f}
+</span>
+</div>
+       """
+       folium.CircleMarker(
+           location=[row['Latitude'], row['Longitude']],
+           radius=8,
+           color=pin_color,
+           fill=True,
+           fill_color=pin_color,
+           fill_opacity=0.7,
+           popup=folium.Popup(popup_html, max_width=250)
+       ).add_to(marker_cluster)
+   st_folium(m, width="100%", height=450, returned_objects=[])
+with col2:
+   st.subheader("🏆 Dynamic Prioritization Leaderboard")
+   st.dataframe(
+       filtered_df[['CIP_ID', 'Project_Name', 'Department', 'Capital_Cost', 'Custom_Composite_Score']],
+       use_container_width=True,
+       height=450,
+       column_config={
+           "Capital_Cost": st.column_config.NumberColumn("Capital Cost", format="$%,.0f"),
+           "Custom_Composite_Score": st.column_config.ProgressColumn(
+               "Priority Rating", min_value=1.0, max_value=5.0, format="%.2f"
+           )
+       },
+       hide_index=True
+   )
+st.markdown("---")
+# --- 5. TEMPORAL FINANCIAL DISTRIBUTION LOGIC (Linear Cost Spreading) ---
+st.subheader("⏳ Multi-Year Capital Cash Flow Projections (Linear Financial Distribution)")
+cash_flow_records = []
+for _, row in filtered_df.iterrows():
+   # Calculate duration
+   duration_days = (row['End_Dt'] - row['Start_Dt']).days
+   if duration_days <= 0:
+       duration_days = 1 # Prevent divide-by-zero errors for single-day items
+   daily_rate = row['Capital_Cost'] / duration_days
+   # Expand linearly across standard date bounds
+   date_range = pd.date_range(start=row['Start_Dt'], end=row['End_Dt'], freq='D')
+   for day in date_range:
+       cash_flow_records.append({
+           'Year': day.year,
+           'Department': row['Department'],
+           'Daily_Expenditure': daily_rate
+       })
+if cash_flow_records:
+   cf_df = pd.DataFrame(cash_flow_records)
+   # 5a. Annual Stacked Bar Aggregate
+   annual_chart_data = cf_df.groupby(['Year', 'Department'])['Daily_Expenditure'].sum().reset_index()
+   annual_chart_data.rename(columns={'Daily_Expenditure': 'Annual_Cost'}, inplace=True)
+   annual_chart_data = annual_chart_data.sort_values(by='Year')
+   # 5b. Cumulative Curve Aggregate
+   cumulative_chart_data = cf_df.groupby('Year')['Daily_Expenditure'].sum().reset_index()
+   cumulative_chart_data = cumulative_chart_data.sort_values(by='Year')
+   cumulative_chart_data['Cumulative_Cost'] = cumulative_chart_data['Daily_Expenditure'].cumsum()
+   col3, col4 = st.columns(2)
+   with col3:
+       fig_bar = px.bar(
+           annual_chart_data,
+           x='Year',
+           y='Annual_Cost',
+           color='Department',
+           title="Annual Funding Allocations by Department",
+           labels={'Annual_Cost': 'Allocated Budget ($)', 'Year': 'Calendar Year'},
+           template='plotly_white'
+       )
+       fig_bar.update_layout(xaxis_type='category', barmode='stack', hovermode='x unified')
+       st.plotly_chart(fig_bar, use_container_width=True)
+   with col4:
+       fig_line = go.Figure()
+       fig_line.add_trace(go.Scatter(
+           x=cumulative_chart_data['Year'],
+           y=cumulative_chart_data['Cumulative_Cost'],
+           mode='lines+markers',
+           name='Cumulative Total Program Cost',
+           line=dict(color='#2ca02c', width=4),
+           marker=dict(size=8, symbol='diamond')
+       ))
+       fig_line.update_layout(
+           title="Cumulative Capital Program Expenditure Profile",
+           xaxis_title="Calendar Year",
+           yaxis_title="Total Multi-Year Commitment ($)",
+           xaxis=dict(type='category'),
+           template='plotly_white',
+           hovermode='x unified'
+       )
+       st.plotly_chart(fig_line, use_container_width=True)
+else:
+st.info("Select global dashboard metrics to populate temporal cash flow timelines.")
