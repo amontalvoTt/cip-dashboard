@@ -202,4 +202,4 @@ if len(cash_flow_records) > 0:
        )
        st.plotly_chart(fig_line, use_container_width=True)
 else:
-st.info("Please adjust global dashboard filters or verify your project date columns to generate multi-year financial profiles.")
+    st.info("Please adjust global dashboard filters or verify your project date columns to generate multi-year financial profiles.")
