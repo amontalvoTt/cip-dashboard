@@ -85,7 +85,7 @@ if uploaded_file is not None:
    except Exception as e:
        st.error(f"Failed to parse CSV file structure. Technical details: {str(e)}")
 else:
-st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
+   st.info("💡 Please upload a CIP CSV file to initialize. Awaiting data input...")
    st.stop()
 
 
