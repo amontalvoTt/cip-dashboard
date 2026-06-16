@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import os
 import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_folium import st_folium
@@ -14,10 +15,14 @@ st.markdown("---")
 # --- 1. DATA INGESTION & DATA CLEANING ENGINE ---
 @st.cache_data
 def load_and_clean_data(file_source):
-   if isinstance(file_source, str):
-       df = pd.read_csv(file_source)
+   # Handle both file uploads (bytes/buffers) and local server paths seamlessly
+   if isinstance(file_source, (str, os.PathLike)):
+       df = pd.read_csv(file_source, encoding='utf-8-sig', engine='python', on_bad_lines='skip')
    else:
-       df = pd.read_csv(file_source)
+       # If it's a file uploader object, read it as raw text to parse cleanly
+       raw_bytes = file_source.read()
+       raw_text = raw_bytes.decode('utf-8-sig', errors='ignore')
+       df = pd.read_csv(io.StringIO(raw_text), engine='python', on_bad_lines='skip')
    # Standardize and clean financial columns (stripping whitespace, quotes, commas, dollar signs)
    for col in ['Capital_Cost', 'Operating_Cost_Annual']:
        if col in df.columns:
@@ -25,13 +30,13 @@ def load_and_clean_data(file_source):
            df[col] = df[col].str.replace(',', '', regex=False)
            df[col] = df[col].str.strip()
            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-   # CRITICAL FIX: Force flexible date parsing to handle mixed format (e.g. 1/15/2026 or 2026-01-15)
+   # Force flexible date parsing to handle mixed format (e.g. 1/15/2026 or 2026-01-15)
    df['Start_Dt'] = pd.to_datetime(df['Project_Start_Date'], errors='coerce', format='mixed')
    df['End_Dt'] = pd.to_datetime(df['Project_End_Date'], errors='coerce', format='mixed')
    # Ensure coordinates are numeric
    df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
    df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
-   # Fill missing scores with neutral baseline
+   # Fill missing criteria scores with neutral baseline
    score_cols = [
        'Flood_Mitigation_Score', 'Sustainability_Score', 'Economic_Impact_Score',
        'Social_Justice_Equity_Score', 'Risk_Mitigation_Score', 'Constructability_Score'
@@ -40,17 +45,36 @@ def load_and_clean_data(file_source):
        if col in df.columns:
            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(3)
    return df.dropna(subset=['Start_Dt', 'End_Dt'])
-# Sidebar File Selection
+# Sidebar File Selection & Dynamic Cloud Directory Resolution
 st.sidebar.header("📁 Data Source Selection")
 uploaded_file = st.sidebar.file_uploader("Upload an updated CIP CSV file", type=["csv"])
-try:
-   if uploaded_file is not None:
+df = None
+# Attempt to locate the file dynamically regardless of directory context
+default_filename = "CIP_Table.csv"
+cloud_path = os.path.join(os.getcwd(), default_filename)
+if uploaded_file is not None:
+   try:
        df = load_and_clean_data(uploaded_file)
-   else:
-       df = load_and_clean_data("CIP_Table.csv")
-   st.sidebar.success(f"Successfully loaded {len(df)} active CIP projects.")
-except Exception as e:
-   st.sidebar.error("Awaiting valid data file input or 'CIP_Table.csv' mismatch.")
+       st.sidebar.success("Successfully loaded uploaded CSV dataset.")
+   except Exception as e:
+       st.sidebar.error(f"Error parsing uploaded file: {str(e)}")
+elif os.path.exists(default_filename):
+   try:
+       df = load_and_clean_data(default_filename)
+       st.sidebar.success(f"Successfully loaded local baseline matrix ({len(df)} projects).")
+   except Exception as e:
+       st.sidebar.error(f"Error parsing local default file: {str(e)}")
+elif os.path.exists(cloud_path):
+   try:
+       df = load_and_clean_data(cloud_path)
+       st.sidebar.success(f"Successfully loaded cloud baseline matrix ({len(df)} projects).")
+   except Exception as e:
+       st.sidebar.error(f"Error parsing cloud default file: {str(e)}")
+else:
+   st.sidebar.warning("⚠️ Baseline file not found in repository root directory.")
+# Halt layout initialization gracefully if data matrix is missing
+if df is None or df.empty:
+st.info("💡 Please upload your project dataset (`CIP_Table.csv`) via the sidebar interface to initialize the application.")
    st.stop()
 # --- 2. MULTI-CRITERIA SCORING & FILTERING ---
 st.sidebar.header("🎛️ Priority Multipliers & Weights")
@@ -158,7 +182,6 @@ if not filtered_df.empty:
                'Department': row['Department'],
                'Daily_Expenditure': daily_rate
            })
-# FIXED: Explicit structural safety catch to block groupings if array/dataframe is empty
 if len(cash_flow_records) > 0:
    cf_df = pd.DataFrame(cash_flow_records)
    # 5a. Annual Stacked Bar Aggregate
