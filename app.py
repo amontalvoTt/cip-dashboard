@@ -74,7 +74,7 @@ else:
    st.sidebar.warning("⚠️ Baseline file not found in repository root directory.")
 # Halt layout initialization gracefully if data matrix is missing
 if df is None or df.empty:
-st.info("💡 Please upload your project dataset (`CIP_Table.csv`) via the sidebar interface to initialize the application.")
+   st.info("💡 Please upload your project dataset (`CIP_Table.csv`) via the sidebar interface to initialize the application.")
    st.stop()
 # --- 2. MULTI-CRITERIA SCORING & FILTERING ---
 st.sidebar.header("🎛️ Priority Multipliers & Weights")
