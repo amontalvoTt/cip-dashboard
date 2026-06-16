@@ -14,19 +14,20 @@ st.markdown("---")
 # --- 1. DATA INGESTION & DATA CLEANING ENGINE ---
 @st.cache_data
 def load_and_clean_data(file_source):
-   # Read the file content
    if isinstance(file_source, str):
        df = pd.read_csv(file_source)
    else:
        df = pd.read_csv(file_source)
-   # Standardize and clean financial columns
+   # Standardize and clean financial columns (stripping whitespace, quotes, commas, dollar signs)
    for col in ['Capital_Cost', 'Operating_Cost_Annual']:
        if col in df.columns:
-           df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '').str.strip()
+           df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+           df[col] = df[col].str.replace(',', '', regex=False)
+           df[col] = df[col].str.strip()
            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-   # Standardize and parse dates
-   df['Start_Dt'] = pd.to_datetime(df['Project_Start_Date'], errors='coerce')
-   df['End_Dt'] = pd.to_datetime(df['Project_End_Date'], errors='coerce')
+   # CRITICAL FIX: Force flexible date parsing to handle mixed format (e.g. 1/15/2026 or 2026-01-15)
+   df['Start_Dt'] = pd.to_datetime(df['Project_Start_Date'], errors='coerce', format='mixed')
+   df['End_Dt'] = pd.to_datetime(df['Project_End_Date'], errors='coerce', format='mixed')
    # Ensure coordinates are numeric
    df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
    df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
@@ -38,7 +39,6 @@ def load_and_clean_data(file_source):
    for col in score_cols:
        if col in df.columns:
            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(3)
-   # Drop rows that don't have valid start/end dates for timeline calculations
    return df.dropna(subset=['Start_Dt', 'End_Dt'])
 # Sidebar File Selection
 st.sidebar.header("📁 Data Source Selection")
@@ -47,7 +47,6 @@ try:
    if uploaded_file is not None:
        df = load_and_clean_data(uploaded_file)
    else:
-       # Fallback to local file discovered in workspace
        df = load_and_clean_data("CIP_Table.csv")
    st.sidebar.success(f"Successfully loaded {len(df)} active CIP projects.")
 except Exception as e:
@@ -55,14 +54,12 @@ except Exception as e:
    st.stop()
 # --- 2. MULTI-CRITERIA SCORING & FILTERING ---
 st.sidebar.header("🎛️ Priority Multipliers & Weights")
-st.sidebar.markdown("Adjust priorities to update the composite project scores dynamically:")
 w_flood = st.sidebar.slider("Flood Mitigation Weight", 0.0, 1.0, 0.20, 0.05)
 w_sustain = st.sidebar.slider("Sustainability Weight", 0.0, 1.0, 0.15, 0.05)
 w_econ = st.sidebar.slider("Economic Impact Weight", 0.0, 1.0, 0.15, 0.05)
 w_equity = st.sidebar.slider("Social Justice & Equity Weight", 0.0, 1.0, 0.20, 0.05)
 w_risk = st.sidebar.slider("Risk Mitigation Weight", 0.0, 1.0, 0.20, 0.05)
 w_construct = st.sidebar.slider("Constructability Weight", 0.0, 1.0, 0.10, 0.05)
-# Calculate Normalized Scores
 total_weight = w_flood + w_sustain + w_econ + w_equity + w_risk + w_construct
 if total_weight == 0:
    total_weight = 1.0
@@ -77,16 +74,16 @@ df['Custom_Composite_Score'] = (
 df['Custom_Composite_Score'] = df['Custom_Composite_Score'].round(2)
 # Global Filters
 st.sidebar.header("🔍 Global Dashboard Filters")
-all_depts = sorted(df['Department'].unique().tolist())
+all_depts = sorted(df['Department'].unique().tolist()) if not df.empty else []
 selected_depts = st.sidebar.multiselect("Filter by Department", all_depts, default=all_depts)
-all_phases = sorted(df['Phase'].unique().tolist())
+all_phases = sorted(df['Phase'].unique().tolist()) if not df.empty else []
 selected_phases = st.sidebar.multiselect("Filter by Project Phase", all_phases, default=all_phases)
 # Apply Filters
 filtered_df = df[df['Department'].isin(selected_depts) & df['Phase'].isin(selected_phases)].copy()
 filtered_df = filtered_df.sort_values(by='Custom_Composite_Score', ascending=False)
 # --- 3. TOP-LEVEL KPI METRICS ---
-total_investment = filtered_df['Capital_Cost'].sum()
-avg_priority_score = filtered_df['Custom_Composite_Score'].mean() if len(filtered_df) > 0 else 0
+total_investment = filtered_df['Capital_Cost'].sum() if not filtered_df.empty else 0
+avg_priority_score = filtered_df['Custom_Composite_Score'].mean() if not filtered_df.empty else 0
 kpi1, kpi2, kpi3 = st.columns(3)
 kpi1.metric("Total Program Portfolio Value", f"${total_investment:,.0f}")
 kpi2.metric("Filtered Projects Counter", f"{len(filtered_df)} Projects")
@@ -96,17 +93,15 @@ st.markdown("---")
 col1, col2 = st.columns([3, 2])
 with col1:
    st.subheader("📍 Interactive Geospatial Portfolio Map (Leaflet)")
-   # Handle map center calculation safely
    valid_coords = filtered_df.dropna(subset=['Latitude', 'Longitude'])
    if not valid_coords.empty:
        center_lat = valid_coords['Latitude'].median()
        center_lon = valid_coords['Longitude'].median()
    else:
-       center_lat, center_lon = 28.5383, -81.3792 # Baseline fallback coords
+       center_lat, center_lon = 28.5383, -81.3792
    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="cartodbpositron")
    marker_cluster = MarkerCluster().add_to(m)
    for _, row in valid_coords.iterrows():
-       # Setup Dynamic Colored Pin Metrics
        score = row['Custom_Composite_Score']
        pin_color = 'red' if score >= 4.0 else 'orange' if score >= 3.0 else 'green'
        popup_html = f"""
@@ -114,7 +109,7 @@ with col1:
 <h5 style="margin:0 0 5px 0; color:#1f77b4;">{row['Project_Name']}</h5>
 <b>ID:</b> {row['CIP_ID']}<br>
 <b>Dept:</b> {row['Department']}<br>
-<b>Phase:</b> {row['Phase']} ({row['Phase_Status']})<br>
+<b>Phase:</b> {row['Phase']}<br>
 <b>Capital Cost:</b> ${row['Capital_Cost']:,.0f}<br>
 <hr style="margin:5px 0;">
 <span style="background-color:{pin_color}; color:white; padding:2px 6px; border-radius:3px; font-weight:bold;">
@@ -131,7 +126,7 @@ with col1:
            fill_opacity=0.7,
            popup=folium.Popup(popup_html, max_width=250)
        ).add_to(marker_cluster)
-   st_folium(m, width="100%", height=450, returned_objects=[])
+   st_folium(m, width="100%", height=450, key="map", returned_objects=[])
 with col2:
    st.subheader("🏆 Dynamic Prioritization Leaderboard")
    st.dataframe(
@@ -150,21 +145,21 @@ st.markdown("---")
 # --- 5. TEMPORAL FINANCIAL DISTRIBUTION LOGIC (Linear Cost Spreading) ---
 st.subheader("⏳ Multi-Year Capital Cash Flow Projections (Linear Financial Distribution)")
 cash_flow_records = []
-for _, row in filtered_df.iterrows():
-   # Calculate duration
-   duration_days = (row['End_Dt'] - row['Start_Dt']).days
-   if duration_days <= 0:
-       duration_days = 1 # Prevent divide-by-zero errors for single-day items
-   daily_rate = row['Capital_Cost'] / duration_days
-   # Expand linearly across standard date bounds
-   date_range = pd.date_range(start=row['Start_Dt'], end=row['End_Dt'], freq='D')
-   for day in date_range:
-       cash_flow_records.append({
-           'Year': day.year,
-           'Department': row['Department'],
-           'Daily_Expenditure': daily_rate
-       })
-if cash_flow_records:
+if not filtered_df.empty:
+   for _, row in filtered_df.iterrows():
+       duration_days = (row['End_Dt'] - row['Start_Dt']).days
+       if duration_days <= 0:
+           duration_days = 1
+       daily_rate = row['Capital_Cost'] / duration_days
+       date_range = pd.date_range(start=row['Start_Dt'], end=row['End_Dt'], freq='D')
+       for day in date_range:
+           cash_flow_records.append({
+               'Year': day.year,
+               'Department': row['Department'],
+               'Daily_Expenditure': daily_rate
+           })
+# FIXED: Explicit structural safety catch to block groupings if array/dataframe is empty
+if len(cash_flow_records) > 0:
    cf_df = pd.DataFrame(cash_flow_records)
    # 5a. Annual Stacked Bar Aggregate
    annual_chart_data = cf_df.groupby(['Year', 'Department'])['Daily_Expenditure'].sum().reset_index()
@@ -207,4 +202,4 @@ if cash_flow_records:
        )
        st.plotly_chart(fig_line, use_container_width=True)
 else:
-st.info("Select global dashboard metrics to populate temporal cash flow timelines.")
+st.info("Please adjust global dashboard filters or verify your project date columns to generate multi-year financial profiles.")
